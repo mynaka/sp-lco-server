@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Request
 from passlib.context import CryptContext
+from database import get_neo4j_driver
 
 router = APIRouter()
 
@@ -12,11 +13,22 @@ async def create_user(request: Request):
     password = form_data.get("password")
     role = form_data.get("role")
 
-    if username in users_db:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists")
-    
-    hashed_password = pwd_context.hash(password)
-    new_user = User(username=username, password=hashed_password, role=role)
-    users_db[username] = new_user
-    
+    # Connect to Neo4j database
+    with get_neo4j_driver().session() as session:
+        # Check if user already exists
+        result = session.run("MATCH (u:User {username: $username}) RETURN u", username=username)
+        if result.single():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists")
+
+        # Hash the password
+        hashed_password = pwd_context.hash(password)
+
+        # Create user node in Neo4j
+        session.run(
+            "CREATE (u:User {username: $username, password: $password, role: $role})",
+            username=username,
+            password=hashed_password,
+            role=role
+        )
+
     return {"message": "User created successfully"}
