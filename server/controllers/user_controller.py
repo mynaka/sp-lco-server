@@ -1,11 +1,13 @@
-from fastapi import APIRouter, HTTPException, status, Request
+from fastapi import APIRouter, HTTPException, status, Request, Depends
 from passlib.context import CryptContext
 from database import get_neo4j_driver
+from controllers.auth_controller import UserRole, get_current_user_role
 
 router = APIRouter()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# Create user
 @router.post("/create")
 async def create_user(request: Request):
     form_data = await request.form()
@@ -33,8 +35,11 @@ async def create_user(request: Request):
 
     return {"message": "User created successfully"}
 
+# GET one user
 @router.get("/getone")
-async def get_user(request: Request):
+async def get_user(request: Request, user_role: UserRole = Depends(get_current_user_role)):
+    if user_role != UserRole.ADMINISTRATOR:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can perform this action")
     form_data = await request.form()
     user_id = form_data.get("id")
     try:
@@ -56,8 +61,11 @@ async def get_user(request: Request):
 
     return user
 
+#GET all users
 @router.get("/getall")
-async def get_all_users():
+async def get_all_users(user_role: UserRole = Depends(get_current_user_role)):
+    if user_role != UserRole.ADMINISTRATOR:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can perform this action")
     with get_neo4j_driver().session() as session:
         result = session.run("MATCH (u:User) RETURN u.username AS username, u.role AS role")
         users = []
@@ -68,8 +76,11 @@ async def get_all_users():
             })
     return users
 
+# User Searchbar backend
 @router.get("/search")
-async def search_users(request: Request):
+async def search_users(request: Request, user_role: UserRole = Depends(get_current_user_role)):
+    if user_role != UserRole.ADMINISTRATOR:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can perform this action")
     form_data = await request.form()
     search_query = form_data.get("search")
 
@@ -86,9 +97,11 @@ async def search_users(request: Request):
 
     return users
 
-
+#Update user role
 @router.put("/update")
-async def update_user(request: Request):
+async def update_user(request: Request, user_role: UserRole = Depends(get_current_user_role)):
+    if user_role != UserRole.ADMINISTRATOR:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can perform this action")
     form_data = await request.form()
     user_id = form_data.get("id")
     user_new_role = form_data.get("new_role")
@@ -109,8 +122,12 @@ async def update_user(request: Request):
 
     return {"message": "User updated successfully"}
 
+# Delete User
 @router.delete("/delete")
-async def delete_user(request: Request):
+async def delete_user(request: Request, user_role: UserRole = Depends(get_current_user_role)):
+    if user_role != UserRole.ADMINISTRATOR:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can perform this action")
+    form_data = await request.form()
     form_data = await request.form()
     user_id = form_data.get("id")
     
