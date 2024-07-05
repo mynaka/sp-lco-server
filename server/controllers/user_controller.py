@@ -14,7 +14,6 @@ async def create_user(request: Request):
     username = form_data.get("username")
     password = form_data.get("password")
 
-    # Connect to Neo4j database
     with get_neo4j_driver().session() as session:
         # Check if user already exists
         result = session.run("MATCH (u:User {username: $username}) RETURN u", username=username)
@@ -31,7 +30,7 @@ async def create_user(request: Request):
             password=hashed_password,
         )
 
-    return {"message": "User created successfully"}
+    return {"status": 200, "user": [username, password]}
 
 # GET one user
 @router.get("/getone")

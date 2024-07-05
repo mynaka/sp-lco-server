@@ -8,32 +8,15 @@ from database import get_neo4j_driver
 import json
 from jose import jwt, JWTError
 
+#Models
+from models.entry_model import Entry
+
+#External functions
+from controllers.auth_controller import get_current_user
+
 router = APIRouter()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-# Pydantic models for request body
-class Entry(BaseModel):
-    term: str
-    term_code: str  # format: <source>:<idnumber> (unique)
-    elements: Dict[str, Any]
-    associated_terms: Dict[str, List[str]]  # {"relationship": [Term Codes]}
-
-# Function to decode JWT token
-def decode_token(token: str):
-    try:
-        payload = jwt.decode(token, "SECRET_KEY", algorithms=["HS256"])
-        return payload
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-# Dependency to get current user
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    return decode_token(token)
 
 # Create entry route
 @router.post("/create")
@@ -53,42 +36,53 @@ async def create_entry(entry: Entry, current_user: dict = Depends(get_current_us
         result = session.run(
             """
             CREATE (e:Entry {
-                term: $term,
+                name: $name,
                 term_code: $term_code,
                 elements: $elements
             })
-            RETURN id(e) AS entry_id
+            RETURN id(e) AS term_id, e.name AS name, e.term_code AS term_code, e.elements AS elements
             """,
-            term=entry.term,
+            name=entry.name,
             term_code=entry.term_code,
             elements=elements_str
         )
-
-        entry_id = result.single()["entry_id"]
+        created_entry = result.single()
+        if not created_entry:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create entry")
 
         # Create relationships for associated_terms
         for relationship, term_codes in entry.associated_terms.items():
             for term_code in term_codes:
                 session.run(
-                    """
-                    MATCH (e1:Entry {term_code: $term_code1}), (e2:Entry {term_code: $term_code2})
-                    CREATE (e1)-[:ASSOCIATED_WITH {relationship: $relationship}]->(e2),
-                           (e2)-[:ASSOCIATED_WITH {relationship: $relationship}]->(e1)
+                    f"""
+                    MATCH (e1:Entry {{term_code: $term_code1}}), (e2:Entry {{term_code: $term_code2}})
+                    CREATE (e1)-[:{relationship}]->(e2)
                     """,
                     term_code1=entry.term_code,
                     term_code2=term_code,
-                    relationship=relationship
                 )
 
-        # Create CONTRIBUTOR relationship
-        user_id = current_user["id"]
-        session.run(
-            """
-            MATCH (u:User {id: $user_id}), (e:Entry {term_code: $term_code})
-            CREATE (u)-[:CONTRIBUTED_TO]->(e)
-            """,
-            user_id=user_id,
-            term_code=entry.term_code
-        )
+    return {"status": 200, "term": {created_entry["name"], created_entry["term_code"], created_entry["elements"]}}
 
-    return {"message": "Entry created successfully"}
+# Read all entries route (For Searchbar)
+@router.get("/all")
+async def get_all_entries():
+    try:
+        with get_neo4j_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (e:Entry)
+                RETURN e.name AS name, e.term_code AS term_code
+                """
+            )
+            entries = []
+            for record in result:
+                entries.append({
+                    "name": record["name"],
+                    "code": record["term_code"]
+                })
+
+        return {"status": "200", "entries": entries}
+
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
