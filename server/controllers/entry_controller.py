@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any
 from database import get_neo4j_driver
 import json
+import copy
 from jose import jwt, JWTError
 
 #Models
@@ -86,3 +87,51 @@ async def get_all_entries():
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@router.get("/database/{database}")
+async def get_entries(database: str):
+    index = 0
+    try:
+        # Neo4j query to fetch entries
+        query = (
+            "MATCH (e:Entry) "
+            "OPTIONAL MATCH (e)-[:subset_of]->(parent:Entry) "
+            "WHERE e.term_code STARTS WITH $database "
+            "RETURN e, COLLECT(parent) as parents"
+        )
+
+        # Execute query
+        with get_neo4j_driver().session() as session:
+            result = session.run(query, database=database)
+            entries = []
+            entry_dict = dict()
+            for record in result:
+                entry = record["e"]
+                entry_data = {
+                    "key": index,
+                    "label": entry["name"],
+                    "data": {
+                        "parents": record["parents"],
+                        "term_code": entry["term_code"]
+                    },
+                    "children": []
+                }
+                index+=1
+                entry_dict[entry["term_code"]] = entry_data
+
+            result = session.run(query, database=database)
+            for record in result:
+                entry = record["e"]
+                term_code = entry["term_code"]
+                parents = record["parents"]
+
+                for parent in parents:
+                    parent_code = parent["term_code"]
+                    if parent_code in entry_dict:
+                        entry_dict[parent_code]["children"].append(entry_dict[term_code])
+
+            entries = [entry for entry in entry_dict.values() if not entry["data"]["parents"]]
+        return entries
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
