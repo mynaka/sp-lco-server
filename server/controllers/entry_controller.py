@@ -90,48 +90,58 @@ async def get_all_entries():
 
 @router.get("/database/{database}")
 async def get_entries(database: str):
-    index = 0
     try:
-        # Neo4j query to fetch entries
+        # Neo4j query to fetch entries and their parent relationships
         query = (
-            "MATCH (e:Entry) "
-            "OPTIONAL MATCH (e)-[:subset_of]->(parent:Entry) "
-            "WHERE e.term_code STARTS WITH $database "
-            "RETURN e, COLLECT(parent) as parents"
+            """
+            MATCH (e:Entry)
+            WHERE e.term_code STARTS WITH $database
+            OPTIONAL MATCH (e)-[:subset_of]->(parent:Entry)
+            RETURN e, COLLECT(parent) as parents
+            """
         )
 
         # Execute query
         with get_neo4j_driver().session() as session:
             result = session.run(query, database=database)
+            
             entries = []
-            entry_dict = dict()
+            entry_dict = {}
+            child_parent_relations = []
+
             for record in result:
                 entry = record["e"]
+                parents = record["parents"]
+                term_code = entry["term_code"]
+                
+                # Create entry data
                 entry_data = {
-                    "key": index,
+                    "key": term_code,
                     "label": entry["name"],
                     "data": {
-                        "parents": record["parents"],
-                        "term_code": entry["term_code"]
+                        "term_code": term_code,
+                        "elements": entry["elements"],
+                        "parents": [parent["term_code"] for parent in parents]
                     },
                     "children": []
                 }
-                index+=1
-                entry_dict[entry["term_code"]] = entry_data
+                
+                # Store entry data
+                entry_dict[term_code] = entry_data
 
-            result = session.run(query, database=database)
-            for record in result:
-                entry = record["e"]
-                term_code = entry["term_code"]
-                parents = record["parents"]
-
+                # Store child-parent relationships
                 for parent in parents:
-                    parent_code = parent["term_code"]
-                    if parent_code in entry_dict:
-                        entry_dict[parent_code]["children"].append(entry_dict[term_code])
+                    child_parent_relations.append((term_code, parent["term_code"]))
 
-            entries = [entry for entry in entry_dict.values() if not entry["data"]["parents"]]
-        return entries
+            # Construct the hierarchy
+            for child_code, parent_code in child_parent_relations:
+                if parent_code in entry_dict:
+                    entry_dict[parent_code]["children"].append(entry_dict[child_code])
+
+            # Extract root entries
+            root_entries = [entry for entry in entry_dict.values() if not entry["data"]["parents"]]
+
+        return {"status": "200", "entries": root_entries}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
