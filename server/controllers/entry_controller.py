@@ -1,19 +1,18 @@
 # controllers/entry_controller.py
-
-from fastapi import APIRouter, HTTPException, status, Depends, Request
+import re
+import json
+from fastapi import APIRouter, File, HTTPException, UploadFile, status, Depends
 from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel
-from typing import List, Dict, Any
+
 from database import get_neo4j_driver
 import json
-import copy
-from jose import jwt, JWTError
 
 #Models
 from models.entry_model import Entry
 
-#External functions
-from controllers.auth_controller import get_current_user
+#Utilities
+from utils.file_helper import *
+from utils.auth import *
 
 router = APIRouter()
 
@@ -41,7 +40,7 @@ async def create_entry(entry: Entry, current_user: dict = Depends(get_current_us
                 term_code: $term_code,
                 elements: $elements
             })
-            RETURN id(e) AS term_id, e.name AS name, e.term_code AS term_code, e.elements AS elements
+            RETURN elementId(e) AS term_id, e.name AS name, e.term_code AS term_code, e.elements AS elements
             """,
             name=entry.name,
             term_code=entry.term_code,
@@ -145,3 +144,60 @@ async def get_entries(database: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/file")
+async def get_data(file: UploadFile = File(...)):
+    if file.content_type == 'application/json':
+        content = await file.read()
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=500, detail=str(json.JSONDecodeError))
+        
+        if "id" in data:
+            if data["id"].startswith("http://purl.obolibrary.org/obo/DOID_"):
+                file.file.seek(0)
+                return await get_dodata_json(file)
+        else:
+            return {"status": "422", "error": "Unprocessable entity"}
+    
+@router.post("/translate")
+async def translate_to_json(file: UploadFile = File(...)):
+    # Read file content as bytes and decode to string
+    content = await file.read()
+    content_str = content.decode('utf-8')
+
+    # Initialize variables to store parsed data
+    entry = {}
+    elements = {}
+
+    synonym_matches = re.findall(r'synonym: "(.*?)" (EXACT|RELATED|NARROW|BROAD| ) \[.*?\]', content_str)
+
+    entry["name"] = re.search(r'name: (.*)', content_str).group(1)
+    entry["term_code"] = re.search(r'id: (.*)', content_str).group(1)
+    def_match = re.search(r'def: "(.*?)" \[([^\[\]]+)\]', content_str)
+    elements["definition"] = def_match.group(1).strip()
+    elements["definition_xrefs"] = [def_match.group(2).strip()]
+    elements["subsets"] = re.findall(r'subset: (.*)', content_str)
+    elements["synonyms"] = [f'{match[0]} [{match[1]}]' for match in synonym_matches]
+    elements["xrefs"] = re.findall(r'xref: (.*)', content_str)
+    elements["alternative_ids"] = re.findall(r'alt_id: (.*)', content_str)
+
+    is_a_matches = re.findall(r'is_a: (\S+)(?: \{.*\})?(?: ! (.*))?', content_str)
+    associated_terms = {}
+    if is_a_matches:
+        associated_terms["subset_of"] = []
+        for match in is_a_matches:
+            code = match[0].strip()
+            term = match[1].strip() if match[1] else code
+            associated_terms["subset_of"].append({"term": term, "code": code})
+
+    entry["elements"] = elements
+    entry["associated_terms"] = associated_terms
+    response = {
+        "status": "200",
+        "entry": entry
+    }
+
+    return response
