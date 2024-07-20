@@ -14,7 +14,21 @@ async def get_dodata_json(file):
         }
 
         term_code = data.id.split("/")[-1].replace("_", ":")
-        synonyms = [synonym.val + " [EXACT]" for synonym in data.meta.synonyms if synonym.pred == 'hasExactSynonym'] if data.meta.synonyms else None
+        synonyms = []
+        if data.meta.synonyms:
+            for synonym in data.meta.synonyms:
+                synonym_type = None
+                if synonym.pred == 'hasExactSynonym':
+                    synonym_type = 'EXACT'
+                elif synonym.pred == 'hasRelatedSynonym':
+                    synonym_type = 'RELATED'
+                elif synonym.pred == 'hasNarrowSynonym':
+                    synonym_type = 'NARROW'
+                elif synonym.pred == 'hasBroadSynonym':
+                    synonym_type = 'BROAD'
+                
+                if synonym_type:
+                    synonyms.append(f"{synonym.val} [{synonym_type}]")
         
         parents = [edge.obj.split("/")[-1].replace("_", ":") for edge in data.edges if edge.pred == "is_a"] if data.edges else []
         subsets = []
