@@ -21,6 +21,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 # Create entry route
 @router.post("/create")
 async def create_entry(entry: Entry, current_user: dict = Depends(get_current_user)):
+    """
+    Create entry for Neo4J database
+    """
     elements_str = json.dumps(entry.elements)  # Convert elements dictionary to string
 
     with get_neo4j_driver().session() as session:
@@ -64,9 +67,11 @@ async def create_entry(entry: Entry, current_user: dict = Depends(get_current_us
 
     return {"status": 200, "term": {created_entry["name"], created_entry["term_code"], created_entry["elements"]}}
 
-# Read all entries route (For Searchbar)
 @router.get("/all")
 async def get_all_entries():
+    """
+        Get all existing entries from database.
+    """
     try:
         with get_neo4j_driver().session() as session:
             result = session.run(
@@ -89,6 +94,9 @@ async def get_all_entries():
 
 @router.get("/database/{database}")
 async def get_entries(database: str):
+    """
+    Get all entries from a given database. Returns it in a Tree structure.
+    """
     try:
         # Neo4j query to fetch entries and their parent relationships
         query = (
@@ -103,8 +111,7 @@ async def get_entries(database: str):
         # Execute query
         with get_neo4j_driver().session() as session:
             result = session.run(query, database=database)
-            
-            entries = []
+
             entry_dict = {}
             child_parent_relations = []
 
@@ -148,6 +155,9 @@ async def get_entries(database: str):
 
 @router.post("/file")
 async def get_data(file: UploadFile = File(...)):
+    """
+    Synthesize JSON from a JSON/OBO ontology entry.
+    """
     if file.content_type == 'application/json':
         content = await file.read()
         try:
