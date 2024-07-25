@@ -1,13 +1,13 @@
-from fastapi import File, HTTPException, UploadFile
+import re
+from fastapi import HTTPException
 #Models
 from models.entry_model import DOTermData
 from models.subset import subset_definitions_instance
 
-async def get_dodata_json(file):
+def get_do_data_json(data: dict):
+    """Synthesize a Disease Ontology entry into a uniform JSON format"""
     try:
-        content = await file.read()
-        data = DOTermData.parse_raw(content)
-
+        data = DOTermData(**data)
         definition_info = {
             "def": data.meta.definition.val if data.meta.definition else None,
             "xrefs": data.meta.definition.xrefs if data.meta.definition and data.meta.definition.xrefs else None
@@ -43,7 +43,8 @@ async def get_dodata_json(file):
 
         elements = {
             "ontology_id": data.id,
-            "definition": definition_info if definition_info["def"] or definition_info["xrefs"] else None,
+            "definition": definition_info["def"] if definition_info["def"] else None,
+            "definition_xrefs": definition_info["xrefs"] if definition_info["xrefs"] else None,
             "subsets": subsets,
             "synonyms": synonyms,
             "xrefs": [xref.val for xref in data.meta.xrefs] if data.meta.xrefs else None,
@@ -65,3 +66,75 @@ async def get_dodata_json(file):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+def get_mondo_obo_json(content):
+    content_str = content
+
+    entry = {}
+    elements = {}
+
+    synonym_matches = re.findall(r'synonym: "(.*?)" (EXACT|RELATED|NARROW|BROAD| ) \[.*?\]', content_str)
+
+    entry["name"] = re.search(r'name: (.*)', content_str).group(1)
+    entry["term_code"] = re.search(r'id: (.*)', content_str).group(1)
+    def_match = re.search(r'def: "(.*?)" \[([^\[\]]+)\]', content_str)
+    if def_match:
+        elements["definition"] = def_match.group(1).strip()
+        elements["definition_xrefs"] = [def_match.group(2).strip()]
+
+    subsets = re.findall(r'subset: ([^ ]+)', content_str)
+    if subsets:
+        elements["subsets"] = [{"subset": subset, "definition": subset_definitions_instance.get_definition(subset)} for subset in subsets]
+
+    synonyms = [f'{match[0]} [{match[1]}]' for match in synonym_matches]
+    if synonyms:
+        elements["synonyms"] = synonyms
+
+    xrefs = re.findall(r'xref: (.*)', content_str)
+    if xrefs:
+        elements["xrefs"] = [re.sub(r'\s*\{.*?\}', '', xref).strip() for xref in xrefs]
+
+    alternative_ids = re.findall(r'alt_id: (.*)', content_str)
+    if alternative_ids:
+        elements["alternative_ids"] = alternative_ids
+
+    is_a_matches = re.findall(r'is_a: (\S+)(?: \{.*\})?(?: ! (.*))?', content_str)
+    if is_a_matches:
+        associated_terms = {"subset_of": [match[0].strip() for match in is_a_matches]}
+
+    is_a_matches = re.findall(r'is_a: (\S+)(?: \{.*\})?(?: ! (.*))?', content_str)
+    associated_terms = {}
+    if is_a_matches:
+        associated_terms["subset_of"] = []
+        for match in is_a_matches:
+            code = match[0].strip()
+            associated_terms["subset_of"].append(code)
+
+    intersection_of_matches = re.findall(r'intersection_of: (\S+) ! (.*)', content_str)
+    if intersection_of_matches:
+        elements["intersection_of"] = [{"code": match[0], "term": match[1]} for match in intersection_of_matches]
+
+    relationship_matches = re.findall(r'relationship: (\S+) (\S+) ! (.*)', content_str)
+    if relationship_matches:
+        associated_terms["relationship"] = [{"relation": match[0], "code": match[1], "term": match[2]} for match in relationship_matches]
+
+    exact_matches = re.findall(r'property_value: skos:exactMatch (\S+)', content_str)
+    conforms_to = re.findall(r'property_value: terms:conformsTo (\S+)', content_str)
+    if exact_matches:
+        associated_terms["equivalent_to"] = []
+        for match in exact_matches:
+            if not match.startswith("http"):
+                associated_terms["equivalent_to"].append(match)
+            elements.setdefault("exact_match", []).append(match)
+    
+    if conforms_to:
+        elements["conforms_to"] = conforms_to
+
+    entry["elements"] = elements
+    entry["associated_terms"] = associated_terms
+    response = {
+        "status": "200",
+        "entry": entry
+    }
+
+    return response

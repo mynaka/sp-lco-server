@@ -12,7 +12,8 @@ from models.entry_model import Entry
 
 #Utilities
 from utils.file_helper import *
-from utils.auth import *
+from utils.auth import get_current_user
+from utils.entry_helper import *
 
 router = APIRouter()
 
@@ -21,9 +22,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 # Create entry route
 @router.post("/create")
 async def create_entry(entry: Entry, current_user: dict = Depends(get_current_user)):
-    """
-    Create entry for Neo4J database
-    """
+    """Create entry for Neo4J database"""
     elements_str = json.dumps(entry.elements)  # Convert elements dictionary to string
 
     with get_neo4j_driver().session() as session:
@@ -69,8 +68,9 @@ async def create_entry(entry: Entry, current_user: dict = Depends(get_current_us
 
 @router.get("/all")
 async def get_all_entries():
-    """
-        Get all existing entries from database.
+    """Get all existing entries from all databases.
+
+    Returns names and codes of all entries. Used for Landing Page Search Bar.
     """
     try:
         with get_neo4j_driver().session() as session:
@@ -94,8 +94,9 @@ async def get_all_entries():
 
 @router.get("/database/{database}")
 async def get_entries(database: str):
-    """
-    Get all entries from a given database. Returns it in a Tree structure.
+    """Get all entries from a given database. 
+    
+    Returns it in a Tree structure processable by PrimeVue.
     """
     try:
         # Neo4j query to fetch entries and their parent relationships
@@ -104,7 +105,8 @@ async def get_entries(database: str):
             MATCH (e:Entry)
             WHERE e.term_code STARTS WITH $database
             OPTIONAL MATCH (e)-[:subset_of]->(parent:Entry)
-            RETURN e, COLLECT(parent) as parents
+            OPTIONAL MATCH (e)-[:equivalent_to]-(equivalent:Entry)
+            RETURN e, COLLECT(parent) as parents, COLLECT(equivalent) as equivalents
             """
         )
 
@@ -118,6 +120,7 @@ async def get_entries(database: str):
             for record in result:
                 entry = record["e"]
                 parents = record["parents"]
+                equivalents = record["equivalents"]
                 term_code = entry["term_code"]
                 
                 # Create entry data
@@ -127,7 +130,8 @@ async def get_entries(database: str):
                     "data": {
                         "term_code": term_code,
                         "elements": entry["elements"],
-                        "parents": [parent["term_code"] for parent in parents]
+                        "parents": [{"name": parent["name"], "code": parent["term_code"]} for parent in parents],
+                        "equivalents": [{"name": equivalent["name"], "code": equivalent["term_code"], "database": determine_database(equivalent["term_code"])} for equivalent in equivalents]
                     },
                     "children": []
                 }
@@ -155,11 +159,9 @@ async def get_entries(database: str):
 
 @router.post("/file")
 async def get_data(file: UploadFile = File(...)):
-    """
-    Synthesize JSON from a JSON/OBO ontology entry.
-    """
+    """Synthesize JSON from a JSON/OBO ontology entry."""
+    content = await file.read()
     if file.content_type == 'application/json':
-        content = await file.read()
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
@@ -167,47 +169,12 @@ async def get_data(file: UploadFile = File(...)):
         
         if "id" in data:
             if data["id"].startswith("http://purl.obolibrary.org/obo/DOID_"):
-                file.file.seek(0)
-                return await get_dodata_json(file)
+                return get_do_data_json(data)
         else:
             return {"status": "422", "error": "Unprocessable entity"}
-    
-@router.post("/translate")
-async def translate_to_json(file: UploadFile = File(...)):
-    # Read file content as bytes and decode to string
-    content = await file.read()
-    content_str = content.decode('utf-8')
-
-    # Initialize variables to store parsed data
-    entry = {}
-    elements = {}
-
-    synonym_matches = re.findall(r'synonym: "(.*?)" (EXACT|RELATED|NARROW|BROAD| ) \[.*?\]', content_str)
-
-    entry["name"] = re.search(r'name: (.*)', content_str).group(1)
-    entry["term_code"] = re.search(r'id: (.*)', content_str).group(1)
-    def_match = re.search(r'def: "(.*?)" \[([^\[\]]+)\]', content_str)
-    elements["definition"] = def_match.group(1).strip()
-    elements["definition_xrefs"] = [def_match.group(2).strip()]
-    elements["subsets"] = re.findall(r'subset: (.*)', content_str)
-    elements["synonyms"] = [f'{match[0]} [{match[1]}]' for match in synonym_matches]
-    elements["xrefs"] = re.findall(r'xref: (.*)', content_str)
-    elements["alternative_ids"] = re.findall(r'alt_id: (.*)', content_str)
-
-    is_a_matches = re.findall(r'is_a: (\S+)(?: \{.*\})?(?: ! (.*))?', content_str)
-    associated_terms = {}
-    if is_a_matches:
-        associated_terms["subset_of"] = []
-        for match in is_a_matches:
-            code = match[0].strip()
-            term = match[1].strip() if match[1] else code
-            associated_terms["subset_of"].append({"term": term, "code": code})
-
-    entry["elements"] = elements
-    entry["associated_terms"] = associated_terms
-    response = {
-        "status": "200",
-        "entry": entry
-    }
-
-    return response
+    elif file.filename.lower().endswith('.obo'):
+        try:
+            # Assuming OBO file content needs specific processing
+            return get_mondo_obo_json(content.decode('utf-8'))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))

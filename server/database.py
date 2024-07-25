@@ -13,11 +13,6 @@ USER = os.getenv("NEO4J_USER")
 PASSWORD = os.getenv("NEO4J_PASSWORD")
 AUTH = (USER, PASSWORD)
 
-# Debugging statements
-print(f"URI: {URI}", file=sys.stderr)
-print(f"USER: {USER}", file=sys.stderr)
-print(f"PASSWORD: {PASSWORD}", file=sys.stderr)
-
 def get_neo4j_driver():
     if not URI or not USER or not PASSWORD:
         raise ValueError("One or more environment variables are not set: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD")
