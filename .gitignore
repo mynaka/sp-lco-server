@@ -2,3 +2,4 @@
 /server/venv/*
 /server/*/__pycache__
 .env
+/server/utils/*.ttl

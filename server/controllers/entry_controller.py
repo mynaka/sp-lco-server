@@ -1,8 +1,12 @@
 # controllers/entry_controller.py
+import csv
+from io import StringIO
+import os
 import re
 import json
-from fastapi import APIRouter, File, HTTPException, UploadFile, status, Depends
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Depends
 from fastapi.security import OAuth2PasswordBearer
+import shutil
 
 from database import get_neo4j_driver
 import json
@@ -76,8 +80,8 @@ async def get_all_entries():
         with get_neo4j_driver().session() as session:
             result = session.run(
                 """
-                MATCH (e:Entry)
-                RETURN e.name AS name, e.term_code AS term_code
+                MATCH (e:Entity)
+                RETURN e.prefLabel AS name, e.notation AS term_code
                 """
             )
             entries = []
@@ -93,7 +97,7 @@ async def get_all_entries():
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 @router.get("/database/{database}")
-async def get_entries(database: str):
+async def get_root_entries(database: str):
     """Get all entries from a given database. 
     
     Returns it in a Tree structure processable by PrimeVue.
@@ -102,79 +106,186 @@ async def get_entries(database: str):
         # Neo4j query to fetch entries and their parent relationships
         query = (
             """
-            MATCH (e:Entry)
-            WHERE e.term_code STARTS WITH $database
-            OPTIONAL MATCH (e)-[:subset_of]->(parent:Entry)
-            OPTIONAL MATCH (e)-[:equivalent_to]-(equivalent:Entry)
-            RETURN e, COLLECT(parent) as parents, COLLECT(equivalent) as equivalents
+            MATCH (e:Entity)
+            WHERE (e.notation STARTS WITH $database + ":" OR e.identifier STARTS WITH $database + ":") AND NOT((e)-[]->())
+            RETURN e.prefLabel AS prefLabel, 
+                e.notation AS notation, 
+                EXISTS(()-[]->(e)) AS hasIncomingRelationships,
+                e AS data
             """
         )
 
         # Execute query
         with get_neo4j_driver().session() as session:
             result = session.run(query, database=database)
-
             entry_dict = {}
-            child_parent_relations = []
 
             for record in result:
-                entry = record["e"]
-                parents = record["parents"]
-                equivalents = record["equivalents"]
-                term_code = entry["term_code"]
+                entry = record["data"]
+                pref_label = record["prefLabel"]
+                notation = record["notation"]
+                has_incoming_relationships = record["hasIncomingRelationships"]
                 
                 # Create entry data
                 entry_data = {
-                    "key": term_code,
-                    "label": entry["name"],
-                    "data": {
-                        "term_code": term_code,
-                        "elements": entry["elements"],
-                        "parents": [{"name": parent["name"], "code": parent["term_code"]} for parent in parents],
-                        "equivalents": [{"name": equivalent["name"], "code": equivalent["term_code"], "database": determine_database(equivalent["term_code"])} for equivalent in equivalents]
-                    },
-                    "children": []
+                    "key": notation,
+                    "label": pref_label,
+                    "data": entry,
+                    "leaf": not has_incoming_relationships,
+                    "loading": True
                 }
                 
                 # Store entry data
-                entry_dict[term_code] = entry_data
+                entry_dict[notation] = entry_data
 
-                # Store child-parent relationships
-                for parent in parents:
-                    child_parent_relations.append((term_code, parent["term_code"]))
-
-            # Construct the hierarchy
-            for child_code, parent_code in child_parent_relations:
-                if parent_code in entry_dict:
-                    entry_dict[parent_code]["children"].append(entry_dict[child_code])
-
-            # Extract root entries
-            root_entries = [entry for entry in entry_dict.values() if not entry["data"]["parents"]]
+            root_entries = list(entry_dict.values())
 
         return {"status": "200", "entries": root_entries}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Handle exceptions, log error, and return an error response
+        return {"status": "500", "error": str(e)}
 
 
-@router.post("/file")
-async def get_data(file: UploadFile = File(...)):
-    """Synthesize JSON from a JSON/OBO ontology entry."""
-    content = await file.read()
-    if file.content_type == 'application/json':
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=500, detail=str(json.JSONDecodeError))
+@router.get("/database/{database}")
+async def get_root_entries(database: str):
+    """Get all entries from a given database. 
+    
+    Returns it in a Tree structure processable by PrimeVue.
+    """
+    try:
+        # Neo4j query to fetch entries and their parent relationships
+        db = database + ":"
+        query = (
+            """
+            MATCH (root:Entity)
+            WHERE (root.notation STARTS WITH $db OR root.identifier STARTS WITH $db) AND NOT((root)-[SUBSET_OF]->())
+            RETURN root.prefLabel AS prefLabel, 
+                root.notation AS notation, 
+                EXISTS(()-[]->(root)) AS hasIncomingRelationships,
+                root AS data
+            """
+        )
+
+        # Execute query
+        with get_neo4j_driver().session() as session:
+            result = session.run(query, database=db)
+
+            entry_dict = {}
+
+            for record in result:
+                entry = record["data"]
+                pref_label = record["prefLabel"]
+                notation = record["notation"]
+                has_incoming_relationships = record["hasIncomingRelationships"]
+                
+                # Create entry data
+                entry_data = {
+                    "key": notation,
+                    "label": pref_label,
+                    "data": entry,
+                    "leaf": not has_incoming_relationships,
+                    "loading": True
+                }
+                
+                # Store entry data
+                entry_dict[notation] = entry_data
+
+            root_entries = list(entry_dict.values())
+
+        return {"status": "200", "entries": root_entries}
+
+    except Exception as e:
+        return {"status": "500", "error": str(e)}
+
+@router.get("/database/{node_notation}/children")
+async def get_children(node_notation: str):
+    """Get all children of the given node where a SUBCLASS_OF relationship exists."""
+    query = """
+    MATCH (child)-[:SUBCLASS_OF]->(parent {notation: $node_notation})
+    RETURN child.prefLabel AS prefLabel,
+        child.notation AS notation,
+        EXISTS(()-[]->(child)) AS hasIncomingRelationships,
+        child AS data
+    """
+    with get_neo4j_driver().session() as session:
+        result = session.run(query, node_notation=node_notation)
+
+        children_dict = {}
+
+        for record in result:
+            entry = record["data"]
+            pref_label = record["prefLabel"]
+            notation = record["notation"]
+            has_incoming_relationships = record["hasIncomingRelationships"]
+            
+            # Create entry data
+            entry_data = {
+                "key": notation,
+                "label": pref_label,
+                "data": entry,
+                "leaf": not has_incoming_relationships,
+                "loading": True
+            }
+            
+            # Store entry data
+            children_dict[notation] = entry_data
+
+        children_entries = list(children_dict.values())
+
+    return {"status": "200", "entries": children_entries}
+neo4j_loader = Neo4jLoader()
+
+@router.on_event("shutdown")
+async def shutdown_event():
+    neo4j_loader.close()  # Close Neo4j connection when the app shuts down
+
+# Endpoint to load TTL ontology into Neo4j
+@router.post("/load_ontology")
+async def load_ontology(file_path: str = Form(...)):
+    try:
+        rdf_graph = parse_ttl(file_path)
+        triples = extract_all_data_icd10cm(rdf_graph)
+        neo4j_loader.create_nodes(triples)
+        return {"message": "Ontology loaded successfully"}
+    except:
+        return {"message": file_path}
+
+# Endpoint to query a term from Neo4j
+@router.post("/get_code")
+async def get_term_code(label: str = Form(...)):
+    notation = neo4j_loader.query_icd10cm_neo4j(label)
+    return notation
+
+@router.post("/uploadfile/")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Upload a CSV file, process it, and return the updated content.
+    """
+    try:
+        content = await file.read()
         
-        if "id" in data:
-            if data["id"].startswith("http://purl.obolibrary.org/obo/DOID_"):
-                return get_do_data_json(data)
-        else:
-            return {"status": "422", "error": "Unprocessable entity"}
-    elif file.filename.lower().endswith('.obo'):
-        try:
-            # Assuming OBO file content needs specific processing
-            return get_mondo_obo_json(content.decode('utf-8'))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        csv_data = StringIO(content.decode("utf-8"))
+        csv_reader = csv.reader(csv_data)
+        
+        updated_rows = []
+        
+        header = next(csv_reader)
+        
+        for row in csv_reader:
+            for i in range(len(row)):
+                label = row[i]  # Get the current cell value
+                notation = neo4j_loader.query_icd10cm_neo4j(label)
+            
+                if notation:
+                    row[i] = notation  # Update the cell with the notation/identifier
+
+            updated_rows.append(row)
+        
+        return {
+            "status": "200",
+            "header": header,
+            "updated_data": updated_rows
+        }
+    except:
+        return {"message": content}
