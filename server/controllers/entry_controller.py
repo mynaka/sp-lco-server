@@ -109,7 +109,7 @@ async def get_root_entries(database: str):
             MATCH (e:Entity)
             WHERE (e.notation STARTS WITH $database + ":" OR e.identifier STARTS WITH $database + ":") AND NOT((e)-[]->())
             RETURN e.prefLabel AS prefLabel, 
-                e.notation AS notation, 
+                COALESCE(e.notation, e.identifier) AS notation,
                 EXISTS(()-[]->(e)) AS hasIncomingRelationships,
                 e AS data
             """
@@ -202,9 +202,10 @@ async def get_root_entries(database: str):
 async def get_children(node_notation: str):
     """Get all children of the given node where a SUBCLASS_OF relationship exists."""
     query = """
-    MATCH (child)-[:SUBCLASS_OF]->(parent {notation: $node_notation})
+    MATCH (child)-[:SUBCLASS_OF]->(parent)
+    WHERE parent.identifier = $node_notation OR parent.notation = $node_notation
     RETURN child.prefLabel AS prefLabel,
-        child.notation AS notation,
+        COALESCE(child.notation, child.identifier) AS notation,  // Use COALESCE to choose identifier if notation is null
         EXISTS(()-[]->(child)) AS hasIncomingRelationships,
         child AS data
     """
