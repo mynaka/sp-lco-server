@@ -1,7 +1,6 @@
 import rdflib
 from database import get_neo4j_driver
 from collections import defaultdict
-from urllib.parse import urlparse
 
 def determine_database(code: str) -> str:
     """Determine the database based on the code prefix."""
@@ -49,68 +48,58 @@ def extract_all_data_icd10cm(graph):
             nodes[s_str]["properties"][predicate].append(str(o))
     return nodes
 
-# Neo4j Loader Class to create consolidated nodes
-class Neo4jLoader:
-    def __init__(self):
-        self.driver = get_neo4j_driver()
-    
-    def close(self):
-        self.driver.close()
-    
-    # Load extracted data into Neo4j as nodes
-    def create_nodes(self, nodes):
-        relations_to_create = []  # List to hold relationships to create later
 
-        with self.driver.session() as session:
-            for node_uri, data in nodes.items():
-                properties = {k: v if len(v) > 1 else v[0] for k, v in data["properties"].items() if k != "subClassOf"}
+def query_icd10cm_neo4j(label):
+    """
+    Get the standardized notation of a label or alternate label within an ontology.
+    """
+    try:
+        with get_neo4j_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity)
+                WHERE n.prefLabel = $label OR ANY(altLabel IN n.altLabel WHERE altLabel = $label)
+                RETURN COALESCE(n.notation, n.identifier) AS notation
+                """,
+                label=label
+            )
+            record = result.single()
+            if record:
+                return record["notation"]
+            else:
+                return None
+    except Exception as e:
+        return {"status": "500", "error": str(e)}
 
-                # Create or update the node
-                session.run(
-                    """
-                    MERGE (entity:Entity {uri: $uri})
-                    ON CREATE SET entity += $properties
-                    """,
-                    uri=node_uri,
-                    properties=properties
-                )
+def create_nodes(self, nodes):
+    relations_to_create = []
 
-                # Handle subClassOf relationships
-                if "subClassOf" in data["properties"]:
-                    for superclass_uri in data["properties"]["subClassOf"]:
-                        # Store the relation in the array for later processing
-                        relations_to_create.append((node_uri, superclass_uri))
+    with get_neo4j_driver().session() as session:
+        for node_uri, data in nodes.items():
+            properties = {k: v if len(v) > 1 else v[0] for k, v in data["properties"].items() if k != "subClassOf"}
 
-        # Now create the stored relationships
-        with self.driver.session() as session:
-            for node_uri, superclass_uri in relations_to_create:
-                session.run(
-                    """
-                    MATCH (child:Entity {uri: $child_uri}), (parent:Entity {uri: $parent_uri})
-                    MERGE (child)-[:SUBCLASS_OF]->(parent)
-                    """,
-                    child_uri=node_uri,
-                    parent_uri=superclass_uri
-                )
-    
-    def query_icd10cm_neo4j(self, label):
-        """
-        Get the standardized notation of a label or alternate label within an ontology.
-        """
-        try:
-            with self.driver.session() as session:
-                result = session.run(
-                    """
-                    MATCH (n:Entity)
-                    WHERE n.prefLabel = $label OR ANY(altLabel IN n.altLabel WHERE altLabel = $label)
-                    RETURN COALESCE(n.notation, n.identifier) AS notation
-                    """,
-                    label=label
-                )
-                record = result.single()
-                if record:
-                    return record["notation"]
-                else:
-                    return None
-        except Exception as e:
-            return {"status": "500", "error": str(e)}
+            # Create or update the node
+            session.run(
+                """
+                MERGE (entity:Entity {uri: $uri})
+                ON CREATE SET entity += $properties
+                """,
+                uri=node_uri,
+                properties=properties
+            )
+
+            if "subClassOf" in data["properties"]:
+                for superclass_uri in data["properties"]["subClassOf"]:
+                    relations_to_create.append((node_uri, superclass_uri))
+
+    # Now create the stored relationships
+    with get_neo4j_driver().session() as session:
+        for node_uri, superclass_uri in relations_to_create:
+            session.run(
+                """
+                MATCH (child:Entity {uri: $child_uri}), (parent:Entity {uri: $parent_uri})
+                MERGE (child)-[:SUBCLASS_OF]->(parent)
+                """,
+                child_uri=node_uri,
+                parent_uri=superclass_uri
+            )

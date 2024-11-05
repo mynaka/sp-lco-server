@@ -4,11 +4,12 @@ from io import StringIO
 from typing import Dict, List
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Depends
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.responses import StreamingResponse
+from concurrent.futures import ProcessPoolExecutor
 
 from pydantic import BaseModel
 
 from database import get_neo4j_driver
-import json
 
 #Models
 from models.entry_model import Entry
@@ -184,58 +185,58 @@ async def get_children(node_notation: str):
         children_entries = list(children_dict.values())
 
     return {"status": "200", "entries": children_entries}
-neo4j_loader = Neo4jLoader()
 
 @router.on_event("shutdown")
 async def shutdown_event():
-    neo4j_loader.close()  # Close Neo4j connection when the app shuts down
+    get_neo4j_driver().close()
 
-# Endpoint to load TTL ontology into Neo4j
 @router.post("/load_ontology")
 async def load_ontology(file_path: str = Form(...)):
     try:
         rdf_graph = parse_ttl(file_path)
         triples = extract_all_data_icd10cm(rdf_graph)
-        neo4j_loader.create_nodes(triples)
+        create_nodes(triples)
         return {"message": "Ontology loaded successfully"}
     except:
         return {"message": file_path}
 
-# Endpoint to query a term from Neo4j
-@router.post("/get_code")
-async def get_term_code(label: str = Form(...)):
-    notation = neo4j_loader.query_icd10cm_neo4j(label)
-    return notation
-
 @router.post("/uploadfile/")
 async def upload_file(file: UploadFile = File(...)):
     """
-    Upload a CSV file, process it, and return the updated content.
+    Upload a CSV file, process it in parallel, and return the updated content as a CSV file.
     """
     try:
+        # Read the uploaded file content
         content = await file.read()
         
+        # Create a StringIO object for reading and writing CSV data
         csv_data = StringIO(content.decode("utf-8"))
         csv_reader = csv.reader(csv_data)
         
-        updated_rows = []
+        updated_csv = StringIO()
+        csv_writer = csv.writer(updated_csv)
         
+        # Read header and write to the output CSV
         header = next(csv_reader)
+        csv_writer.writerow(header)
         
-        for row in csv_reader:
-            for i in range(len(row)):
-                label = row[i]  # Get the current cell value
-                notation = neo4j_loader.query_icd10cm_neo4j(label)
-            
-                if notation:
-                    row[i] = notation  # Update the cell with the notation/identifier
-
-            updated_rows.append(row)
+        # Use ProcessPoolExecutor to process rows in parallel
+        with ProcessPoolExecutor() as executor:
+            # Process each row in parallel
+            updated_rows = list(executor.map(process_row, csv_reader))
         
-        return {
-            "status": "200",
-            "header": header,
-            "updated_data": updated_rows
-        }
-    except:
-        return {"message": content}
+        # Write updated rows to the CSV
+        for row in updated_rows:
+            csv_writer.writerow(row)
+        
+        # Move to the beginning of the StringIO object for reading
+        updated_csv.seek(0)
+        
+        # Return as a downloadable CSV file
+        return StreamingResponse(
+            updated_csv,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=updated_data.csv"}
+        )
+    except Exception as e:
+        return {"message": str(e)}

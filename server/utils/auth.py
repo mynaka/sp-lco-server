@@ -44,7 +44,6 @@ def authenticate_user(username: str, password: str):
         else:
             return None
 
-# Create JWT Token
 def create_access_token(data: dict):
     """Create access token for session"""
     return jwt.encode(data, SECRET_KEY, algorithm="HS256")
