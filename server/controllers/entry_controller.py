@@ -96,6 +96,42 @@ async def get_all_entries():
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
+@router.get("/search/{searchQuery}")
+async def search_entries(searchQuery: str):
+    """
+    Search for the 10 closest terms to the provided query in Entity nodes based on prefLabel and altLabel.
+
+    Returns:
+        A list of up to 10 matched entries.
+    """
+    try:
+        with get_neo4j_driver().session() as session:
+            result = session.run(
+                """
+                CALL db.index.fulltext.queryNodes('entityLabelIndex', $query)
+                YIELD node, score
+                WHERE node.notation IS NOT NULL OR node.identifier IS NOT NULL
+                RETURN node.prefLabel AS name, COALESCE(node.notation, node.identifier) AS term_code, score
+                ORDER BY score DESC
+                LIMIT 5
+                """,
+                {"query": searchQuery}
+            )
+
+            entries = []
+            for record in result:
+                entries.append({
+                    "name": record["name"],
+                    "code": record["term_code"],
+                    "score": record["score"]
+                })
+
+        return {"status": "200", "entries": entries}
+
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
 @router.get("/database/{database}")
 async def get_root_entries(database: str):
     """Get all entries from a given database. 
