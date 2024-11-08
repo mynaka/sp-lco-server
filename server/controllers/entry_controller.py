@@ -1,7 +1,6 @@
 # controllers/entry_controller.py
 import csv
 from io import StringIO
-from typing import Dict, List
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Depends
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import StreamingResponse
@@ -242,37 +241,49 @@ async def upload_file(file: UploadFile = File(...)):
     Upload a CSV file, process it in parallel, and return the updated content as a CSV file.
     """
     try:
-        # Read the uploaded file content
         content = await file.read()
-        
-        # Create a StringIO object for reading and writing CSV data
         csv_data = StringIO(content.decode("utf-8"))
         csv_reader = csv.reader(csv_data)
         
         updated_csv = StringIO()
         csv_writer = csv.writer(updated_csv)
         
-        # Read header and write to the output CSV
         header = next(csv_reader)
         csv_writer.writerow(header)
-        
-        # Use ProcessPoolExecutor to process rows in parallel
+
+        # Parallel Processing
         with ProcessPoolExecutor() as executor:
-            # Process each row in parallel
             updated_rows = list(executor.map(process_row, csv_reader))
         
-        # Write updated rows to the CSV
         for row in updated_rows:
             csv_writer.writerow(row)
         
-        # Move to the beginning of the StringIO object for reading
         updated_csv.seek(0)
         
-        # Return as a downloadable CSV file
         return StreamingResponse(
             updated_csv,
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=updated_data.csv"}
+            headers={"Content-Disposition": f"attachment; filename={file.filename.rsplit('.', 1)[0]}_standardized.csv"}
         )
+    except Exception as e:
+        return {"message": str(e)}
+    
+@router.get("/database/{node_notation}/ancestors")
+async def get_ancestors(node_notation: str):
+    try:
+        query = """
+            MATCH path = (startNode {identifier: $node_notation})-[:SUBCLASS_OF*]->(ancestor)
+            WHERE NOT (ancestor)-[:SUBCLASS_OF]->()
+            WITH [node IN reverse(nodes(path)) | COALESCE(node.notation, node.identifier)] AS ancestors
+            RETURN collect(DISTINCT ancestors) AS unique_ancestors
+            """
+        with get_neo4j_driver().session() as session:
+            result = session.run(query, node_notation=node_notation)
+            record = result.single()
+
+            unique_ancestors = record["unique_ancestors"][0]
+            unique_ancestors = [ancestor for ancestor in unique_ancestors if ancestor != node_notation]
+
+            return {"ancestors": unique_ancestors}
     except Exception as e:
         return {"message": str(e)}
