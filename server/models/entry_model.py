@@ -40,3 +40,26 @@ class DOTermData(BaseModel):
     type: str
     meta: Meta
     edges: Optional[List[Edge]] = None
+
+class DataInput(BaseModel):
+    prefLabel: str
+    identifier: str
+    description: str
+    format: str
+    sample: str
+    output: str
+
+class DataInputSpecies(BaseModel):
+    identifier: str
+    prefLabel: str
+    altLabel: Optional[list[str]] = None
+    refs: Optional[list[str]] = None
+
+class DataInputProtein(BaseModel):
+    identifier: str
+    prefLabel: str
+    function: str
+    altLabel: Optional[list[str]] = None
+    features: str
+    sequence: str
+    refs: Optional[list[str]] = None

@@ -4,14 +4,13 @@ from io import StringIO
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Depends
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import StreamingResponse
+from fastapi.concurrency import run_in_threadpool
 from concurrent.futures import ProcessPoolExecutor
-
-from pydantic import BaseModel
 
 from database import get_neo4j_driver
 
 #Models
-from models.entry_model import Entry
+from models.entry_model import DataInput, DataInputProtein
 
 #Utilities
 from utils.file_helper import *
@@ -21,14 +20,6 @@ from utils.entry_helper import *
 router = APIRouter()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-class DataInput(BaseModel):
-    prefLabel: str
-    identifier: str
-    description: str
-    format: str
-    sample: str
-    output: str
 
 # Create entry route
 @router.post("/create")
@@ -69,6 +60,22 @@ async def create_entry(data: DataInput, current_user: dict = Depends(get_current
             "description": created_entry["e"]["description"],
         }
     }
+
+@router.post("/create-species")
+async def create_entry(data: DataInputSpecies, current_user: dict = Depends(get_current_user)):
+    result = await run_in_threadpool(create_species, data)
+    return result
+
+@router.post("/create/{parent}/{typeOfEntry}")
+async def create_entry(data: DataInputSpecies, parent: str, typeOfEntry: str, current_user: dict = Depends(get_current_user)):
+    result = await run_in_threadpool(create_strain_serotype, data, parent, typeOfEntry)
+    return result
+
+@router.post("/create-protein/{parent}/{typeOfEntry}")
+async def create_entry(data: DataInputProtein, parent: str, typeOfEntry: str, current_user: dict = Depends(get_current_user)):
+    result = await run_in_threadpool(create_protein_gene, data, parent, typeOfEntry)
+    return result
+
 @router.get("/all")
 async def get_all_entries():
     """Get all existing entries from all databases.
@@ -79,7 +86,7 @@ async def get_all_entries():
         with get_neo4j_driver().session() as session:
             result = session.run(
                 """
-                MATCH (e:Entity)
+                MATCH (e)
                 RETURN e.prefLabel AS name, e.notation AS term_code
                 """
             )
@@ -142,13 +149,13 @@ async def get_root_entries(database: str):
         query = (
             """
             MATCH (e)
-            WHERE (e:Entity OR e:Table) AND 
-                (e.notation STARTS WITH $database + ":" OR e.identifier STARTS WITH $database + ":") AND 
+            WHERE (e.notation STARTS WITH $database + ":" OR e.identifier STARTS WITH $database + ":") AND 
                 NOT((e)-[]->())
             RETURN e.prefLabel AS prefLabel, 
                 COALESCE(e.notation, e.identifier) AS notation,
                 EXISTS(()-[]->(e)) AS hasIncomingRelationships,
-                e AS data
+                e AS data,
+                labels(e) AS nodeLabel
             """
         )
 
@@ -162,6 +169,7 @@ async def get_root_entries(database: str):
                 pref_label = record["prefLabel"]
                 notation = record["notation"]
                 has_incoming_relationships = record["hasIncomingRelationships"]
+                node_type = record["nodeLabel"]
                 
                 # Create entry data
                 entry_data = {
@@ -169,7 +177,8 @@ async def get_root_entries(database: str):
                     "label": pref_label,
                     "data": entry,
                     "leaf": not has_incoming_relationships,
-                    "loading": True
+                    "loading": True,
+                    "nodeType": node_type[0]
                 }
                 
                 # Store entry data
@@ -188,11 +197,12 @@ async def get_children(node_notation: str):
     """Get all children of the given node where a SUBCLASS_OF relationship exists."""
     query = """
     MATCH (child)-[:SUBCLASS_OF]->(parent)
-    WHERE (child:Entity OR child:Table) AND (parent.identifier = $node_notation OR parent.notation = $node_notation)
+    WHERE (parent.identifier = $node_notation OR parent.notation = $node_notation)
     RETURN child.prefLabel AS prefLabel,
-        COALESCE(child.notation, child.identifier) AS notation,  // Use COALESCE to choose identifier if notation is null
+        COALESCE(child.notation, child.identifier) AS notation,
         EXISTS(()-[]->(child)) AS hasIncomingRelationships,
-        child AS data
+        child AS data,
+        labels(child) AS nodeLabel
     """
     with get_neo4j_driver().session() as session:
         result = session.run(query, node_notation=node_notation)
@@ -204,6 +214,7 @@ async def get_children(node_notation: str):
             pref_label = record["prefLabel"]
             notation = record["notation"]
             has_incoming_relationships = record["hasIncomingRelationships"]
+            node_type = record["nodeLabel"]
             
             # Create entry data
             entry_data = {
@@ -211,7 +222,8 @@ async def get_children(node_notation: str):
                 "label": pref_label,
                 "data": entry,
                 "leaf": not has_incoming_relationships,
-                "loading": True
+                "loading": True,
+                "nodeType": node_type[0]
             }
             
             # Store entry data
