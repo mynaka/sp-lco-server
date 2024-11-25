@@ -1,7 +1,7 @@
 # controllers/entry_controller.py
 import csv
 from io import StringIO
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Depends
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile, status, Depends
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -22,7 +22,7 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # Create entry route
-@router.post("/create")
+@router.post("/createe")
 async def create_entry(data: DataInput, current_user: dict = Depends(get_current_user)):
     """Create entry for Neo4J database"""
 
@@ -61,20 +61,16 @@ async def create_entry(data: DataInput, current_user: dict = Depends(get_current
         }
     }
 
-@router.post("/create-species")
-async def create_entry(data: DataInputSpecies, current_user: dict = Depends(get_current_user)):
-    result = await run_in_threadpool(create_species, data)
-    return result
-
-@router.post("/create/{parent}/{typeOfEntry}")
-async def create_entry(data: DataInputSpecies, parent: str, typeOfEntry: str, current_user: dict = Depends(get_current_user)):
-    result = await run_in_threadpool(create_strain_serotype, data, parent, typeOfEntry)
-    return result
-
-@router.post("/create-protein/{parent}/{typeOfEntry}")
-async def create_entry(data: DataInputProtein, parent: str, typeOfEntry: str, current_user: dict = Depends(get_current_user)):
-    result = await run_in_threadpool(create_protein_gene, data, parent, typeOfEntry)
-    return result
+@router.post("/create")
+async def create_entry(
+    data: dict = Body(...),
+    parents: list[str] = Body([]),
+    typeOfEntry: str = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    # Call the create_protein_gene function in a thread pool
+    result = await run_in_threadpool(create_entry_helper, data, parents, typeOfEntry)
+    return {"status": "200", "result": result}
 
 @router.get("/all")
 async def get_all_entries():
@@ -103,9 +99,14 @@ async def get_all_entries():
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 @router.get("/search/{searchQuery}")
-async def search_entries(searchQuery: str):
+async def search_entries(searchQuery: str, selectedNodes: list[str] = Query(default=[])):
     """
-    Search for the 10 closest terms to the provided query in Entity nodes based on prefLabel and altLabel.
+    Search for the 10 closest terms to the provided query in Entity nodes based on prefLabel and altLabel,
+    excluding nodes with identifiers in the selectedNodes list.
+
+    Args:
+        searchQuery: The query string to search for.
+        selectedNodes: A list of identifiers to exclude from the search.
 
     Returns:
         A list of up to 10 matched entries.
@@ -116,12 +117,16 @@ async def search_entries(searchQuery: str):
                 """
                 CALL db.index.fulltext.queryNodes('entityLabelIndex', $query)
                 YIELD node, score
-                WHERE node.notation IS NOT NULL OR node.identifier IS NOT NULL
-                RETURN node.prefLabel AS name, COALESCE(node.notation, node.identifier) AS term_code, score
+                WHERE 
+                    (node.notation IS NOT NULL OR node.identifier IS NOT NULL) AND
+                    NOT COALESCE(node.notation, node.identifier) IN $excludeNodes
+                RETURN node.prefLabel AS name, 
+                       COALESCE(node.notation, node.identifier) AS term_code, 
+                       score
                 ORDER BY score DESC
-                LIMIT 5
+                LIMIT 10
                 """,
-                {"query": searchQuery}
+                {"query": searchQuery, "excludeNodes": selectedNodes}
             )
 
             entries = []
@@ -136,7 +141,6 @@ async def search_entries(searchQuery: str):
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
 
 @router.get("/database/{database}")
 async def get_root_entries(database: str):

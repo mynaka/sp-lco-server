@@ -106,181 +106,86 @@ def create_nodes(nodes):
                 child_uri=node_uri,
                 parent_uri=superclass_uri
             )
-
-def create_species(data: DataInputSpecies):
-    """Create entry for Neo4j database"""
     
-    with get_neo4j_driver().session() as session:
-        # Check if the identifier already exists
-        result = session.run(
-            "MATCH (e:Species {identifier: $identifier}) RETURN e",
-            identifier=data.identifier
-        )
-        if result.single():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Identifier already exists")
-
-        # Create the entry node
-        result = session.run(
-            """
-            CREATE (e:Species {prefLabel: $prefLabel, identifier: $identifier, altLabel: $altLabel, refs: $refs})
-            RETURN e
-            """,
-            identifier=data.identifier,
-            prefLabel=data.prefLabel,
-            altLabel=data.altLabel,
-            refs=data.refs
-        )
-        created_entry = result.single()
-        if not created_entry:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create entry")
-
-        # Extract data from the created entry
-        node = created_entry["e"]
-        return {
-            "status": 200,
-            "term": {
-                "name": node["prefLabel"],
-                "identifier": node["identifier"],
-                "altLabel": node["altLabel"],
-                "refs": node["refs"]
-            }
-        }
-    
-    
-def create_strain_serotype(data: DataInputSpecies, parent: str, typeOfEntry: str):
+def create_entry_helper(data: dict, parents: list[str], typeOfEntry: str):
     """Create entry for Neo4j database and link to parent (Species, Strain, or Serotype) as SUBCLASS_OF"""
     
     with get_neo4j_driver().session() as session:
+        identifier = data['identifier']
+        if not identifier:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="`identifier` is required in data"
+            )
+
         # Check if the identifier already exists
         result = session.run(
             "MATCH (e {identifier: $identifier}) RETURN e",
-            identifier=data.identifier
+            identifier=data["identifier"]
         )
         if result.single():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Identifier already exists")
 
-        # Search for the parent node (it could be a Species, Strain, or Serotype)
-        parent_result = session.run(
-            """
-            MATCH (p) WHERE p.identifier = $parent AND (p:Species OR p:Strain OR p:Serotype)
-            RETURN p
-            """,
-            parent=parent
-        )
-        parent_node = parent_result.single()
+        # Search for the parent nodes (can be Species, Strain, or Serotype)
+        if not parents:
+            parent_nodes = []
+        else:
+            parent_query = session.run(
+                """
+                MATCH (p) 
+                WHERE p.identifier IN $parents
+                RETURN p
+                """,
+                parents=parents
+            )
+            parent_nodes = parent_query.values("p")
 
-        # If parent node doesn't exist, raise an error
-        if not parent_node:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Parent {parent} not found in Species, Strain, or Serotype")
+            # If all parent nodes don't exist, raise an error
+            if not parent_nodes:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"None of the specified parents were found in Species, Strain, or Serotype"
+                )
+        
 
-        # Create the new strain or serotype entry
+        # Create the new node entry
+        properties = ", ".join(f"{key}: ${key}" for key in data.keys())
         result = session.run(
             f"""
-            CREATE (e:{typeOfEntry} {{prefLabel: $prefLabel, identifier: $identifier, altLabel: $altLabel, refs: $refs}})
+            CREATE (e:{typeOfEntry} {{ {properties} }})
             RETURN e
             """,
-            identifier=data.identifier,
-            prefLabel=data.prefLabel,
-            altLabel=data.altLabel,
-            refs=data.refs
+            **data
         )
         created_entry = result.single()
 
         if not created_entry:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create entry")
-
         created_node = created_entry["e"]
-        session.run(
-            """
-            MATCH (e), (p)
-            WHERE e.identifier = $identifier AND p.identifier = $parent
-            CREATE (e)-[:SUBCLASS_OF]->(p)
-            """,
-            identifier=data.identifier,
-            parent=parent
-        )
 
-        # Return the newly created entry and link information
+        # Process parent relationships
+        for parent in parents:
+            session.run(
+                """
+                MATCH (e), (p)
+                WHERE e.identifier = $identifier AND p.identifier = $parent
+                CREATE (e)-[:SUBCLASS_OF]->(p)
+                """,
+                identifier=identifier,
+                parent=parent
+            )
+
         return {
-            "status": 200,
-            "term": {
-                "name": created_node["prefLabel"],
-                "identifier": created_node["identifier"],
-                "altLabel": created_node["altLabel"],
-                "refs": created_node["refs"]
-            }
-        }
-    
-def create_protein_gene(data: DataInputProtein, parent: str, typeOfEntry: str):
-    """Create entry for Neo4j database and link to parent (Species, Strain, or Serotype) as SUBCLASS_OF"""
-    
-    with get_neo4j_driver().session() as session:
-        # Check if the identifier already exists
-        result = session.run(
-            "MATCH (e {identifier: $identifier}) RETURN e",
-            identifier=data.identifier
-        )
-        if result.single():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Identifier already exists")
-
-        # Search for the parent node (it could be a Species, Strain, or Serotype)
-        parent_result = session.run(
-            """
-            MATCH (p) WHERE p.identifier = $parent AND (p:Species OR p:Strain OR p:Serotype)
-            RETURN p
-            """,
-            parent=parent
-        )
-        parent_node = parent_result.single()
-
-        # If parent node doesn't exist, raise an error
-        if not parent_node:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Parent {parent} not found in Species, Strain, or Serotype")
-
-        # Create the new strain or serotype entry
-        result = session.run(
-            f"""
-            CREATE (e:{typeOfEntry} 
-                {{prefLabel: $prefLabel,
-                identifier: $identifier,
-                function: $function,
-                altLabel: $altLabel,
-                features: $features,
-                sequence: $sequence,
-                refs: $refs}})
-            RETURN e
-            """,
-            identifier=data.identifier,
-            prefLabel=data.prefLabel,
-            function=data.function,
-            altLabel=data.altLabel,
-            features=data.features,
-            sequence=data.sequence,
-            refs=data.refs
-        )
-        created_entry = result.single()
-
-        if not created_entry:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create entry")
-
-        created_node = created_entry["e"]
-        session.run(
-            """
-            MATCH (e), (p)
-            WHERE e.identifier = $identifier AND p.identifier = $parent
-            CREATE (e)-[:SUBCLASS_OF]->(p)
-            """,
-            identifier=data.identifier,
-            parent=parent
-        )
-
-        # Return the newly created entry and link information
-        return {
-            "status": 200,
-            "term": {
-                "name": created_node["prefLabel"],
-                "identifier": created_node["identifier"],
-                "altLabel": created_node["altLabel"],
-                "refs": created_node["refs"]
+            "status": "success",
+            "code": 200,
+            "message": "Entry created successfully",
+            "data": {
+                "created_node": {
+                    "properties": created_node,  # Includes all dynamic properties of the node
+                },
+                "relationships": {
+                    "type": "SUBCLASS_OF",
+                    "parents": parents if parents else "No parents linked"
+                }
             }
         }

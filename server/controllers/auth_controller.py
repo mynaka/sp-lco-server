@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Form, HTTPException, status
-from fastapi.security import HTTPBasicCredentials
 from passlib.context import CryptContext
 
 from utils.auth import *
