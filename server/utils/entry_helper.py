@@ -175,6 +175,28 @@ def create_entry_helper(data: dict, parents: list[str], typeOfEntry: str):
                 parent=parent
             )
 
+        # Update stuff for searching
+        try:
+            session.run("DROP INDEX entityLabelIndex IF EXISTS;")
+            session.run(
+                """
+                MATCH (n)
+                WHERE NOT 'AllNodes' IN labels(n) AND NOT 'User' IN labels(n)
+                SET n:AllNodes
+                """
+            )
+            session.run(
+                """
+                CREATE FULLTEXT INDEX entityLabelIndex FOR (n:AllNodes)
+                ON EACH [n.prefLabel, n.altLabel, n.identifier];
+                """
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to run maintenance commands: {str(e)}"
+            )
+        
         return {
             "status": "success",
             "code": 200,
