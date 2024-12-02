@@ -182,7 +182,7 @@ async def get_root_entries(database: str):
                     "data": entry,
                     "leaf": not has_incoming_relationships,
                     "loading": True,
-                    "nodeType": node_type[0]
+                    "nodeType": node_type[1] if node_type[0] == "AllNodes" else node_type[0]
                 }
                 
                 # Store entry data
@@ -227,7 +227,7 @@ async def get_children(node_notation: str):
                 "data": entry,
                 "leaf": not has_incoming_relationships,
                 "loading": True,
-                "nodeType": node_type[0]
+                "nodeType": node_type[1] if node_type[0] == "AllNodes" else node_type[0]
             }
             
             # Store entry data
