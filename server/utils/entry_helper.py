@@ -1,78 +1,10 @@
+import re
 from fastapi import HTTPException, status
-import rdflib
+from rdflib import Graph, Namespace
 from database import get_neo4j_driver
 from collections import defaultdict
 
 from models.entry_model import DataInputSpecies, DataInputProtein
-
-def determine_database(code: str) -> str:
-    """Determine the database based on the code prefix."""
-    return code.split(":")[0].lower()
-
-def parse_ttl(file_path):
-    g = rdflib.Graph()
-    g.parse(file_path, format=rdflib.util.guess_format(file_path))
-    return g
-
-# Extract all data from the RDF graph
-def extract_all_data_icd10cm(graph):
-    nodes = defaultdict(lambda: {"uri": None, "properties": defaultdict(list)})
-    prefixes = {
-        "skos": "http://www.w3.org/2004/02/skos/core#",
-        "owl": "http://www.w3.org/2002/07/owl#",
-        "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-        "xsd": "http://www.w3.org/2001/XMLSchema#",
-        "umls": "http://bioportal.bioontology.org/ontologies/umls/",
-        "dc": "http://purl.org/dc/elements/1.1/",
-        "dcterms": "http://purl.org/dc/terms/",
-        "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-        "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-        "sio": "http://semanticscience.org/ontology/sio.owl#"
-    }
-    for s, p, o in graph:
-        s_str = str(s)
-        
-        # Ensure that each subject is added once
-        if nodes[s_str]["uri"] is None:
-            nodes[s_str]["uri"] = s_str
-
-        for prefix_key, prefix_uri in prefixes.items():
-            if str(p).startswith(prefix_uri):
-                predicate = str(p).replace(prefix_uri, "")
-                break
-        else:
-            predicate = str(p)
-        
-        if predicate == "notation":
-            nodes[s_str]["properties"][predicate].append("ICD10CM:"+str(o))
-        elif predicate == "identifier":
-            nodes[s_str]["properties"][predicate].append(str(o).replace('_', ':', 1))
-        else:
-            nodes[s_str]["properties"][predicate].append(str(o))
-    return nodes
-
-
-def query_icd10cm_neo4j(label):
-    """
-    Get the standardized notation of a label or alternate label within an ontology.
-    """
-    try:
-        with get_neo4j_driver().session() as session:
-            result = session.run(
-                """
-                MATCH (n:Entity)
-                WHERE n.prefLabel = $label OR ANY(altLabel IN n.altLabel WHERE altLabel = $label)
-                RETURN COALESCE(n.notation, n.identifier) AS notation
-                """,
-                label=label
-            )
-            record = result.single()
-            if record:
-                return record["notation"]
-            else:
-                return None
-    except Exception as e:
-        return {"status": "500", "error": str(e)}
 
 def create_nodes(nodes):
     relations_to_create = []
@@ -84,7 +16,7 @@ def create_nodes(nodes):
             # Create or update the node
             session.run(
                 """
-                MERGE (entity:Entity {uri: $uri})
+                MERGE (entity:Term {uri: $uri})
                 ON CREATE SET entity += $properties
                 """,
                 uri=node_uri,
@@ -211,3 +143,25 @@ def create_entry_helper(data: dict, parents: list[str], typeOfEntry: str):
                 }
             }
         }
+
+def query_icd10cm_neo4j(label):
+    """
+    Get the standardized notation of a label or alternate label within an ontology.
+    """
+    try:
+        with get_neo4j_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity)
+                WHERE n.prefLabel = $label OR ANY(altLabel IN n.altLabel WHERE altLabel = $label)
+                RETURN COALESCE(n.notation, n.identifier) AS notation
+                """,
+                label=label
+            )
+            record = result.single()
+            if record:
+                return record["notation"]
+            else:
+                return None
+    except Exception as e:
+        return {"status": "500", "error": str(e)}

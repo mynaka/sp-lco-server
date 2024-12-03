@@ -13,9 +13,9 @@ from database import get_neo4j_driver
 from models.entry_model import DataInput, DataInputProtein
 
 #Utilities
-from utils.file_helper import *
 from utils.auth import get_current_user
 from utils.entry_helper import *
+from utils.file_helper import *
 
 router = APIRouter()
 
@@ -202,54 +202,29 @@ async def get_children(node_notation: str):
     query = """
     MATCH (child)-[:SUBCLASS_OF]->(parent)
     WHERE (parent.identifier = $node_notation OR parent.notation = $node_notation)
-    RETURN child.prefLabel AS prefLabel,
-        COALESCE(child.notation, child.identifier) AS notation,
-        EXISTS(()-[]->(child)) AS hasIncomingRelationships,
-        child AS data,
-        labels(child) AS nodeLabel
+    RETURN EXISTS(()-[]->(child)) AS hasIncomingRelationships,
+        labels(child) AS nodeLabel,
+        child  as data
     """
     with get_neo4j_driver().session() as session:
         result = session.run(query, node_notation=node_notation)
 
-        children_dict = {}
-
-        for record in result:
-            entry = record["data"]
-            pref_label = record["prefLabel"]
-            notation = record["notation"]
-            has_incoming_relationships = record["hasIncomingRelationships"]
-            node_type = record["nodeLabel"]
-            
-            # Create entry data
-            entry_data = {
-                "key": notation,
-                "label": pref_label,
-                "data": entry,
-                "leaf": not has_incoming_relationships,
+        children_entries = [
+            {
+                "key": record["data"]["identifier"],
+                "label": record["data"]["prefLabel"],
+                "data": record["data"],
+                "leaf": not record["hasIncomingRelationships"],
                 "loading": True,
-                "nodeType": node_type[1] if node_type[0] == "AllNodes" else node_type[0]
+                "nodeType": record["nodeLabel"][1] if record["nodeLabel"][0] == "AllNodes" else record["nodeLabel"][0]
             }
-            
-            # Store entry data
-            children_dict[notation] = entry_data
-
-        children_entries = list(children_dict.values())
-
-    return {"status": "200", "entries": children_entries}
+            for record in result
+        ]
+        return {"status": "200", "entries": children_entries}
 
 @router.on_event("shutdown")
 async def shutdown_event():
     get_neo4j_driver().close()
-
-@router.post("/load_ontology")
-async def load_ontology(file_path: str = Form(...)):
-    try:
-        rdf_graph = parse_ttl(file_path)
-        triples = extract_all_data_icd10cm(rdf_graph)
-        create_nodes(triples)
-        return {"message": "Ontology loaded successfully"}
-    except:
-        return {"message": file_path}
 
 @router.post("/uploadfile/")
 async def upload_file(file: UploadFile = File(...)):
