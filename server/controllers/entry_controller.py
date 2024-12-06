@@ -1,6 +1,7 @@
 # controllers/entry_controller.py
 import csv
 from io import StringIO
+from typing import List, Optional
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile, status, Depends
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import StreamingResponse
@@ -71,6 +72,47 @@ async def create_entry(
     # Call the create_protein_gene function in a thread pool
     result = await run_in_threadpool(create_entry_helper, data, parents, typeOfEntry)
     return {"status": "200", "result": result}
+
+@router.put("/update")
+async def update_entry(
+    data: dict = Body(...),
+    parents: Optional[List[str]] = Body([]),
+    typeOfEntry: str = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update an existing entry and its relationships in the Neo4j database.
+
+    Args:
+        data (dict): The updated node data including identifier and other properties.
+        parents (List[str]): List of parent identifiers to link the updated node to.
+        typeOfEntry (str): The type of the entry being updated (e.g., Species, Strain, etc.).
+        current_user (dict): Current user data, provided by the `get_current_user` dependency.
+
+    Returns:
+        dict: The result of the update operation.
+    """
+    # Ensure the identifier is present in the input data
+    identifier = data.get("identifier")
+    if not identifier:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`identifier` is required in the data payload."
+        )
+
+    # Call the update_entry_helper function in a thread pool
+    try:
+        result = await run_in_threadpool(update_entry_helper, data, parents, typeOfEntry)
+        return {"status": "success", "result": result}
+    except HTTPException as e:
+        # Forward HTTP exceptions raised in the helper
+        raise e
+    except Exception as e:
+        # Catch unexpected exceptions
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {str(e)}"
+        )
 
 @router.get("/all")
 async def get_all_entries():
@@ -200,11 +242,15 @@ async def get_root_entries(database: str):
 async def get_children(node_notation: str):
     """Get all children of the given node where a SUBCLASS_OF relationship exists."""
     query = """
-    MATCH (child)-[:SUBCLASS_OF]->(parent)
-    WHERE (parent.identifier = $node_notation OR parent.notation = $node_notation)
-    RETURN EXISTS(()-[]->(child)) AS hasIncomingRelationships,
-        labels(child) AS nodeLabel,
-        child  as data
+        MATCH (child)-[:SUBCLASS_OF]->(parent)
+        WHERE (parent.identifier = $node_notation OR parent.notation = $node_notation)
+        WITH child, labels(child) AS nodeLabel
+        MATCH (child)-[:SUBCLASS_OF]->(allParents)
+        RETURN 
+            EXISTS(()-[]->(child)) AS hasIncomingRelationships,
+            nodeLabel AS nodeLabel,
+            child AS data,
+            collect({ name: allParents.prefLabel, code: allParents.identifier }) AS parents
     """
     with get_neo4j_driver().session() as session:
         result = session.run(query, node_notation=node_notation)
@@ -216,7 +262,8 @@ async def get_children(node_notation: str):
                 "data": record["data"],
                 "leaf": not record["hasIncomingRelationships"],
                 "loading": True,
-                "nodeType": record["nodeLabel"][1] if record["nodeLabel"][0] == "AllNodes" else record["nodeLabel"][0]
+                "nodeType": record["nodeLabel"][1] if record["nodeLabel"][0] == "AllNodes" else record["nodeLabel"][0],
+                "parents": record["parents"]
             }
             for record in result
         ]
