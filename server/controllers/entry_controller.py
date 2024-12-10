@@ -22,46 +22,6 @@ router = APIRouter()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Create entry route
-@router.post("/createe")
-async def create_entry(data: DataInput, current_user: dict = Depends(get_current_user)):
-    """Create entry for Neo4J database"""
-
-    with get_neo4j_driver().session() as session:
-        # Check if the identifier is unique
-        result = session.run(
-            "MATCH (e:Table {identifier: $identifier}) RETURN e",
-            identifier=data.identifier  # Fixed variable name
-        )
-        if result.single():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Identifier already exists")
-
-        # Create the entry node
-        result = session.run(
-            """
-            CREATE (e:Table {prefLabel: $prefLabel, identifier: $identifier, description: $description, format: $format, sample: $sample, output: $output})
-            RETURN e
-            """,
-            prefLabel=data.prefLabel,
-            identifier=data.identifier,
-            description=data.description,
-            format=data.format,
-            sample=data.sample,
-            output=data.output
-        )
-        created_entry = result.single()
-        if not created_entry:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create entry")
-
-    return {
-        "status": 200,
-        "term": {
-            "name": created_entry["e"]["prefLabel"],
-            "identifier": created_entry["e"]["identifier"],
-            "description": created_entry["e"]["description"],
-        }
-    }
-
 @router.post("/create")
 async def create_entry(
     data: dict = Body(...),
@@ -82,15 +42,6 @@ async def update_entry(
 ):
     """
     Update an existing entry and its relationships in the Neo4j database.
-
-    Args:
-        data (dict): The updated node data including identifier and other properties.
-        parents (List[str]): List of parent identifiers to link the updated node to.
-        typeOfEntry (str): The type of the entry being updated (e.g., Species, Strain, etc.).
-        current_user (dict): Current user data, provided by the `get_current_user` dependency.
-
-    Returns:
-        dict: The result of the update operation.
     """
     # Ensure the identifier is present in the input data
     identifier = data.get("identifier")
@@ -100,7 +51,6 @@ async def update_entry(
             detail="`identifier` is required in the data payload."
         )
 
-    # Call the update_entry_helper function in a thread pool
     try:
         result = await run_in_threadpool(update_entry_helper, data, parents, typeOfEntry)
         return {"status": "success", "result": result}
@@ -145,13 +95,6 @@ async def search_entries(searchQuery: str, selectedNodes: list[str] = Query(defa
     """
     Search for the 10 closest terms to the provided query in Entity nodes based on prefLabel and altLabel,
     excluding nodes with identifiers in the selectedNodes list.
-
-    Args:
-        searchQuery: The query string to search for.
-        selectedNodes: A list of identifiers to exclude from the search.
-
-    Returns:
-        A list of up to 10 matched entries.
     """
     try:
         with get_neo4j_driver().session() as session:
@@ -325,3 +268,13 @@ async def get_ancestors(node_notation: str):
             return {"ancestors": unique_ancestors}
     except Exception as e:
         return {"message": str(e)}
+    
+@router.post("/load_ontology")
+async def load_ontology(file_path: str = Form(...)):
+    try:
+        rdf_graph = parse_ttl(file_path)
+        triples = extract_all_data_icd10cm(rdf_graph)
+        create_nodes(triples)
+        return {"message": "Ontology loaded successfully"}
+    except:
+        return {"message": file_path}
